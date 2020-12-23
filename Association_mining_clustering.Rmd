@@ -1,0 +1,168 @@
+---
+title: "HW2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Packages
+
+```{r}
+library(readr)
+library(readxl)
+library(arules)
+library(Matrix)
+library(dplyr)
+library(tidyverse) 
+library(ggpubr)
+library(factoextra)
+```
+
+## Q1: Data cleansing
+
+```{r}
+# Raw data
+order_items = read_csv("olist_order_items_dataset.csv")
+products = read_csv("olist_products_dataset.csv")
+product_cate = read_csv("product_category_name_translation.csv")
+
+# New df: order
+order = left_join(order_items, products, by = "product_id")
+order = left_join(order, product_cate, by = "product_category_name")
+
+order =
+order %>% group_by(order_id, product_category_name_english) %>%
+  summarise(n = 1)
+
+agg_order = order %>% 
+  filter(!is.na(product_category_name_english),
+         !is.na(order_id)) %>%
+  group_by(order_id) %>%
+  mutate(cum = cumsum(n)) %>%
+  ungroup() %>%
+  select(order_id, product_category_name_english, cum)
+
+# display category (group by cum, item_no) # 97,256 orders
+spread_order = 
+agg_order %>%
+  spread(key = cum, value = product_category_name_english)
+
+spread_order = spread_order[,2:4]
+```
+
+## Transaction Data
+
+```{r}
+m <- as.matrix(spread_order)
+l <- lapply(1:nrow(m), FUN = function(i) (m[i, ]))
+trans <- as(l, "transactions")
+# inspect(trans)
+```
+
+## Set rules
+
+```{r}
+rules = apriori(trans,
+                parameter = list(supp = 0.0001, conf = 0.01, minlen=2))
+inspect(rules)
+inspect(head(sort(rules, by="lift"), 20))
+```
+
+
+
+## Q2: Data cleansing
+
+```{r}
+# Raw data
+customers = read_csv("olist_customers_dataset.csv")
+# customers %>% group_by(customer_state) %>% summarise(n=n())
+orders = read_csv("olist_orders_dataset.csv")
+
+# New df: df_customer
+df_customer = left_join(customers, orders, by = "customer_id")
+df_customer = left_join(df_customer, order_items, by = "order_id")
+
+df_customer =
+df_customer %>% filter(is.na(product_id)==FALSE) %>%
+  group_by(customer_id, customer_state) %>%
+  summarise(item = n(), price_sum = sum(price), price_avg = mean(price))
+```
+
+## Cluster
+
+```{r}
+# Normalize data
+df_customer_normalized = df_customer
+
+df_customer_normalized$item = 
+  with(df_customer_normalized, (item - min(item)) / (max(item) - min(item)))
+df_customer_normalized$price_sum = 
+  with(df_customer_normalized, (price_sum - min(price_sum)) / (max(price_sum) - min(price_sum)))
+df_customer_normalized$price_avg = 
+  with(df_customer_normalized, (price_avg - min(price_avg)) / (max(price_avg) - min(price_avg)))
+
+# K-means
+kcluster = kmeans(df_customer_normalized[,3:4], centers = 4)
+kcluster$centers
+
+cluster_result <- cbind(kcluster$cluster, df_customer) 
+agg <- cluster_result %>%
+  group_by(kcluster$cluster) %>%
+  summarise(n=n(),
+            mean_items=mean(item),
+            mean_order_sum=mean(price_sum))
+agg
+plot(x=agg$mean_items,y=agg$mean_order_sum,type="p",xlab="items",ylab="sum")
+plot(x=df_customer$item,y=df_customer$price_sum,type="p",xlab="items",ylab="sum")
+```
+```{r}
+# check information by state
+cus_cnt <- df_customer %>%
+  group_by(customer_state) %>%
+  summarise(cnt=n()) %>%
+  arrange(desc(cnt))
+ggplot(cus_cnt, aes(x=customer_state,y=cnt)) +
+  geom_col()
+```
+
+```{r}
+# check state sp
+SP <- df_customer %>%
+  filter(customer_state == 'SP')
+normal_SP <- df_customer_normalized %>%
+  filter(customer_state == 'SP')
+# K-means
+kcluster = kmeans(normal_SP[,3:4], centers = 4)
+kcluster$centers
+
+cluster_result <- cbind(kcluster$cluster, SP) 
+agg1 <- cluster_result %>%
+  group_by(kcluster$cluster) %>%
+  summarise(n=n(),
+            mean_items=mean(item),
+            mean_order_sum=mean(price_sum))
+agg1
+plot(x=agg1$mean_items,y=agg1$mean_order_sum,type="p",xlab="items",ylab="sum")
+```
+
+
+```{r}
+SSE_curve <- c()
+for (n in 1:10) {
+  kcluster = kmeans(df_customer_normalized[,3:5], n) 
+  sse = kcluster$tot.withinss
+  SSE_curve[n] = sse}
+  # plot SSE against number of clusters
+plot(1:10, SSE_curve, type = "b")
+
+# Plot
+# fviz_cluster(kcluster, data = df_customer_normalized[,3:5],
+#              palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+#              geom = "point",
+#              ellipse.type = "convex", 
+#              ggtheme = theme_bw()
+#              )
+
+```
